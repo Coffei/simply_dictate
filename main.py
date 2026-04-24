@@ -27,11 +27,15 @@ Env vars:
     DICTATE_API_URL  swap for Groq by setting to
                      https://api.groq.com/openai/v1/audio/transcriptions
                      (use DICTATE_MODEL=whisper-large-v3-turbo with Groq)
+    DICTATE_KEEP_AUDIO  if set to "1"/"true"/"yes", save a timestamped copy
+                        of each recording to $XDG_RUNTIME_DIR/dictate/ for
+                        debugging. Clean up manually.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -51,6 +55,7 @@ PROMPT   = os.environ.get("DICTATE_PROMPT",
     "FCM, APNs, OAuth, SAML, OIDC, Niri, Fedora, Helix, Neovim, LiveView, "
     "PostgreSQL, JSONB, GitLab CI, Ollama, Groq."
 )
+KEEP_AUDIO = os.environ.get("DICTATE_KEEP_AUDIO", "").lower() in ("1", "true", "yes")
 
 RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
 STATE_DIR   = RUNTIME_DIR / "dictate"
@@ -60,6 +65,7 @@ AUDIO_FILE  = STATE_DIR / "recording.wav"
 MUSIC_FLAG  = STATE_DIR / "music_paused"
 
 MAX_WAIT_FOR_FILE_S = 3.0   # how long to wait for parecord to flush the WAV
+TAIL_CAPTURE_S      = 0.3   # let PulseAudio's buffer capture the last syllable
 REQUEST_TIMEOUT_S   = 60
 
 
@@ -139,6 +145,9 @@ def stop_and_transcribe() -> None:
         notify("Dictation", "Not recording", urgency="low")
         return
 
+    # Give PulseAudio's input buffer time to flush the last syllable before stopping.
+    time.sleep(TAIL_CAPTURE_S)
+
     # SIGINT lets parecord flush a valid WAV header; SIGTERM truncates.
     try:
         os.kill(pid, signal.SIGINT)
@@ -146,13 +155,16 @@ def stop_and_transcribe() -> None:
         pass
     PID_FILE.unlink(missing_ok=True)
 
-    # Wait for parecord to finalize the file.
+    # Wait for parecord to actually exit so the WAV is fully written.
     deadline = time.monotonic() + MAX_WAIT_FOR_FILE_S
     while time.monotonic() < deadline:
-        if AUDIO_FILE.exists() and AUDIO_FILE.stat().st_size > 1024:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
             break
         time.sleep(0.05)
-    else:
+
+    if not (AUDIO_FILE.exists() and AUDIO_FILE.stat().st_size > 1024):
         notify("Dictation error", "No audio captured", urgency="critical")
         return
 
@@ -162,6 +174,10 @@ def stop_and_transcribe() -> None:
         return
 
     notify("⏳  Transcribing", "", urgency="low")
+
+    if KEEP_AUDIO:
+        debug_copy = STATE_DIR / f"recording-{int(time.time())}.wav"
+        shutil.copy(AUDIO_FILE, debug_copy)
 
     try:
         with AUDIO_FILE.open("rb") as f:
