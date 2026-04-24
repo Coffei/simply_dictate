@@ -8,6 +8,7 @@ System deps:
     parecord       (pulseaudio-utils — works through pipewire-pulse on Fedora)
     wl-copy        (wl-clipboard)
     notify-send    (libnotify, optional but nice)
+    playerctl      (optional; auto-pauses/resumes MPRIS media players)
 
 Python deps:
     requests
@@ -56,6 +57,7 @@ STATE_DIR   = RUNTIME_DIR / "dictate"
 STATE_DIR.mkdir(exist_ok=True)
 PID_FILE    = STATE_DIR / "record.pid"
 AUDIO_FILE  = STATE_DIR / "recording.wav"
+MUSIC_FLAG  = STATE_DIR / "music_paused"
 
 MAX_WAIT_FOR_FILE_S = 3.0   # how long to wait for parecord to flush the WAV
 REQUEST_TIMEOUT_S   = 60
@@ -71,6 +73,34 @@ def notify(title: str, body: str = "", urgency: str = "normal") -> None:
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass  # notifications are best-effort
+
+
+def pause_music_if_playing() -> None:
+    """Pause any MPRIS player currently playing; remember so we can resume."""
+    try:
+        result = subprocess.run(
+            ["playerctl", "status"],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return
+    if result.returncode != 0 or result.stdout.strip() != "Playing":
+        return
+    try:
+        subprocess.run(["playerctl", "pause"], check=False, timeout=2)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return
+    MUSIC_FLAG.touch()
+
+
+def resume_music_if_paused() -> None:
+    if not MUSIC_FLAG.exists():
+        return
+    MUSIC_FLAG.unlink(missing_ok=True)
+    try:
+        subprocess.run(["playerctl", "play"], check=False, timeout=2)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
 
 
 def running_pid() -> int | None:
@@ -89,6 +119,7 @@ def running_pid() -> int | None:
 # --------------------------------------------------------------- actions ----
 def start_recording() -> None:
     AUDIO_FILE.unlink(missing_ok=True)
+    pause_music_if_playing()
 
     proc = subprocess.Popen(
         ["parecord", "--channels=1", "--rate=16000",
@@ -197,11 +228,17 @@ def cancel() -> None:
 # --------------------------------------------------------------- entry -----
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "cancel":
-        cancel()
+        try:
+            cancel()
+        finally:
+            resume_music_if_paused()
         return
 
     if running_pid() is not None:
-        stop_and_transcribe()
+        try:
+            stop_and_transcribe()
+        finally:
+            resume_music_if_paused()
     else:
         start_recording()
 
