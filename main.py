@@ -179,6 +179,7 @@ def stop_and_transcribe() -> None:
         debug_copy = STATE_DIR / f"recording-{int(time.time())}.wav"
         shutil.copy(AUDIO_FILE, debug_copy)
 
+    request_s = 0.0
     try:
         with AUDIO_FILE.open("rb") as f:
             data = {"model": MODEL, "response_format": "text"}
@@ -187,6 +188,7 @@ def stop_and_transcribe() -> None:
             if PROMPT:
                 data["prompt"] = PROMPT
 
+            request_start = time.monotonic()
             resp = requests.post(
                 API_URL,
                 headers={"Authorization": f"Bearer {API_KEY}"},
@@ -194,6 +196,7 @@ def stop_and_transcribe() -> None:
                 data=data,
                 timeout=REQUEST_TIMEOUT_S,
             )
+            request_s = time.monotonic() - request_start
         resp.raise_for_status()
         text = resp.text.strip()
     except requests.HTTPError as e:
@@ -224,7 +227,7 @@ def stop_and_transcribe() -> None:
         return
 
     preview = text if len(text) <= 80 else text[:77] + "…"
-    notify("📋  Copied", preview)
+    notify(f"📋  Copied ({request_s:.1f}s)", preview)
 
 
 def cancel() -> None:
