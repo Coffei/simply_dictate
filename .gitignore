@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtualenv
+.venv/
+venv/
+
+# Local secrets / config (never commit)
+env
+*.env
