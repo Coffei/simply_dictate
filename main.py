@@ -63,6 +63,7 @@ STATE_DIR.mkdir(exist_ok=True)
 PID_FILE    = STATE_DIR / "record.pid"
 AUDIO_FILE  = STATE_DIR / "recording.wav"
 MUSIC_FLAG  = STATE_DIR / "music_paused"
+NOTIFY_ID_FILE = STATE_DIR / "notify.id"
 
 MAX_WAIT_FOR_FILE_S = 3.0   # how long to wait for parecord to flush the WAV
 TAIL_CAPTURE_S      = 0.3   # let PulseAudio's buffer capture the last syllable
@@ -71,12 +72,28 @@ REQUEST_TIMEOUT_S   = 60
 
 # ---------------------------------------------------------------- helpers ---
 def notify(title: str, body: str = "", urgency: str = "normal") -> None:
+    """Show a notification, reusing one slot so successive ones replace in place.
+
+    GNOME stacks each notification and keeps it in history. We pass `transient`
+    so it isn't kept in history, and reuse the server-assigned id (via -p/-r,
+    persisted across invocations) so a newer notification replaces the older one.
+    """
+    cmd = ["notify-send", "-p", "-u", urgency, "-t", "2500",
+           "-a", "dictate", "-h", "boolean:transient:true"]
     try:
-        subprocess.run(
-            ["notify-send", "-u", urgency, "-t", "2500",
-             "-a", "dictate", title, body],
-            check=False, timeout=2,
+        prev_id = NOTIFY_ID_FILE.read_text().strip()
+        if prev_id:
+            cmd += ["-r", prev_id]
+    except (FileNotFoundError, ValueError):
+        pass
+    try:
+        result = subprocess.run(
+            cmd + [title, body],
+            check=False, timeout=2, capture_output=True, text=True,
         )
+        new_id = result.stdout.strip()
+        if new_id:
+            NOTIFY_ID_FILE.write_text(new_id)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass  # notifications are best-effort
 
